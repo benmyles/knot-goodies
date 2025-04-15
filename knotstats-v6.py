@@ -1,7 +1,7 @@
 # /// script
 # dependencies = [
-#   "flask>=2.0",
-#   "requests>=2.20",
+#     "flask>=2.0",
+#     "requests>=2.20",
 # ]
 # ///
 #
@@ -18,7 +18,7 @@
 # ```kresd.conf
 # net.listen('127.0.0.1', 8453, { kind = 'webmgmt' })
 # modules = {
-#   'http',
+#    'http',
 # }
 # http.config({})
 # ```
@@ -187,9 +187,9 @@ HTML_TEMPLATE = """
 
         <div id="dashboard-content" style="display: none;">
             <div class="instance-selector">
+                <label for="instance-select" class="sr-only">Select Instance:</label>
                 <select id="instance-select" class="instance-select">
-                    <!-- Options will be populated dynamically -->
-                </select>
+                    </select>
             </div>
 
             <div class="charts-grid">
@@ -211,7 +211,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
 
-            <h2 class="section-title">All Statistics</h2>
+            <h2 class="section-title" id="stats-title">All Statistics</h2>
             <div id="stats-container" class="stats-grid">
                 </div>
         </div>
@@ -228,9 +228,10 @@ HTML_TEMPLATE = """
         const errorMessage = document.getElementById('error-message');
         const dashboardContent = document.getElementById('dashboard-content');
         const instanceSelect = document.getElementById('instance-select');
+        const statsTitle = document.getElementById('stats-title');
         const statsApiUrl = '/api/stats';
 
-        let currentInstanceId = null;
+        let currentInstanceId = 'All'; // Default to 'All'
         let allStats = {}; // Will hold all instances stats
 
         // Chart instances (initialized later)
@@ -377,128 +378,217 @@ HTML_TEMPLATE = """
         function updateChartData(chart, newData) {
             if (chart) {
                 chart.data.datasets[0].data = newData;
-                chart.update();
+                chart.update('none'); // 'none' prevents animation on update
             }
         }
 
         // Function to format numbers nicely
         function formatValue(key, value) {
             if (typeof value !== 'number') {
-                return value;
+                return value; // Return non-numbers as is
             }
             if (key.includes('percent')) {
                 return `${value.toFixed(2)}%`;
             }
-            if (key.includes('rss') || key.includes('bytes')) {
+            if (key.includes('rss') || key.includes('bytes') || key.includes('memory')) {
                 if (value < 1024) return `${value} B`;
                 if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
                 if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
                 return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
             }
-            if (Number.isInteger(value)) {
-                return value.toLocaleString();
+             // Check if it's a count/integer-like value
+            if (Number.isInteger(value) || key.includes('count') || key.includes('total') || key.match(/\d+ms|slow$/) || key.match(/^(noerror|nodata|nxdomain|servfail|udp|tcp|dot|doh|internal|xdp|cached|stale)$/)) {
+                 return value.toLocaleString();
             }
+            // Default to 3 decimal places for other floats (e.g., cpu times)
             return value.toFixed(3);
         }
 
         // Function to populate the instance selector dropdown
         function populateInstanceSelector(instances) {
-            instanceSelect.innerHTML = '';
+            const previouslySelected = instanceSelect.value || currentInstanceId; // Remember what was selected
+            instanceSelect.innerHTML = ''; // Clear existing options
 
-            // Set current instance if not already set or if not in the list
-            if (!currentInstanceId || !instances.includes(currentInstanceId)) {
-                currentInstanceId = instances[0];
-            }
+            // Add the "All" option first
+            const allOption = document.createElement('option');
+            allOption.value = 'All';
+            allOption.textContent = 'All Instances (Aggregated)';
+            instanceSelect.appendChild(allOption);
 
+            // Add individual instance options
             instances.forEach(instance => {
                 const option = document.createElement('option');
                 option.value = instance;
                 option.textContent = instance;
-                // Set selected attribute based on currentInstanceId
-                if (instance === currentInstanceId) {
-                    option.selected = true;
-                }
                 instanceSelect.appendChild(option);
             });
 
-            // Make sure the dropdown value matches currentInstanceId
-            instanceSelect.value = currentInstanceId;
+            // Try to re-select the previously selected option
+            if (Array.from(instanceSelect.options).some(opt => opt.value === previouslySelected)) {
+                 instanceSelect.value = previouslySelected;
+                 currentInstanceId = previouslySelected; // Update currentInstanceId if it changed
+            } else {
+                // If the previous selection isn't valid anymore, default to 'All'
+                instanceSelect.value = 'All';
+                currentInstanceId = 'All';
+            }
         }
 
-        // Function to flatten nested stats with dot notation
-        function flattenStats(obj, prefix = '') {
-            let result = {};
-            for (const key in obj) {
-                if (typeof obj[key] === 'object' && obj[key] !== null) {
-                    const flatObject = flattenStats(obj[key], `${prefix}${key}.`);
-                    result = { ...result, ...flatObject };
-                } else {
-                    result[`${prefix}${key}`] = obj[key];
+        // Function to aggregate stats from all instances
+        function aggregateStats(allInstancesData) {
+            const aggregated = {};
+            const instanceIds = Object.keys(allInstancesData);
+
+            if (instanceIds.length === 0) {
+                return {}; // Return empty if no instances
+            }
+
+            // Deep clone the structure of the first instance to initialize aggregation
+            // This helps ensure all sections and keys are present
+            const firstInstanceData = allInstancesData[instanceIds[0]];
+            for (const section in firstInstanceData) {
+                aggregated[section] = {};
+                for (const key in firstInstanceData[section]) {
+                     // Initialize numeric keys to 0, keep others as null/undefined for now
+                     aggregated[section][key] = (typeof firstInstanceData[section][key] === 'number') ? 0 : null;
                 }
             }
-            return result;
+
+
+            // Sum numeric stats across all instances
+            instanceIds.forEach(id => {
+                const instanceData = allInstancesData[id];
+                for (const section in instanceData) {
+                    if (!aggregated[section]) aggregated[section] = {}; // Ensure section exists
+                    for (const key in instanceData[section]) {
+                        const value = instanceData[section][key];
+                        if (typeof value === 'number') {
+                             // Initialize if null or undefined in aggregated structure
+                            if (aggregated[section][key] === null || aggregated[section][key] === undefined) {
+                                aggregated[section][key] = 0;
+                            }
+                            aggregated[section][key] = (aggregated[section][key] || 0) + value;
+                        } else if (aggregated[section][key] === null || aggregated[section][key] === undefined) {
+                            // If it's the first time seeing a non-numeric stat, just take the value
+                            // (doesn't make sense to aggregate strings, etc.) - maybe show 'Multiple'?
+                            // For simplicity, let's keep it simple and just init to 0 for numbers.
+                            // We might need more sophisticated handling for specific non-numeric stats later.
+                             if (aggregated[section][key] === null) { // Only set if it's still null
+                                // aggregated[section][key] = value; // Or maybe keep it null/indicate mixed?
+                             }
+                        }
+                    }
+                }
+            });
+
+             // Post-processing: Calculate percentages, ratios if needed based on aggregated sums
+            if (aggregated.cache && aggregated.cache.hit_ratio_compute) {
+                 const hits = aggregated.cache.hit || 0;
+                 const totalLookups = aggregated.cache.lookup || 0;
+                 aggregated.cache.hit_percent = totalLookups > 0 ? (hits / totalLookups) * 100 : 0;
+                 // Remove the compute flag if it exists
+                 delete aggregated.cache.hit_ratio_compute;
+            }
+             // Example: Calculate cache hit percent if applicable
+            if (aggregated.cache && aggregated.cache.hasOwnProperty('hit') && aggregated.cache.hasOwnProperty('lookup')) {
+                 const hits = aggregated.cache.hit || 0;
+                 const lookups = aggregated.cache.lookup || 0;
+                 // Use a more specific key like 'hit_percent_calculated' to avoid conflict
+                 aggregated.cache.hit_percent_calculated = lookups > 0 ? (hits / lookups * 100) : 0;
+            }
+
+
+            return aggregated;
         }
 
-        // Function to render raw stats for current instance
-        function renderRawStats(instanceData) {
+
+        // Function to render raw stats for current instance or aggregated view
+        function renderRawStats(dataToRender) {
             statsContainer.innerHTML = ''; // Clear previous raw stats
 
-            // Get sections from the instance data
-            const sections = Object.keys(instanceData);
+            if (!dataToRender || Object.keys(dataToRender).length === 0) {
+                statsContainer.innerHTML = '<p class="text-gray-500 col-span-full text-center">No statistics available for this selection.</p>';
+                return;
+            }
 
-            // For each section, create a heading and display its stats
+            // Sort sections alphabetically, except maybe put 'summary' or 'global' first if they exist
+            const sections = Object.keys(dataToRender).sort((a, b) => {
+                if (a === 'summary') return -1;
+                if (b === 'summary') return 1;
+                return a.localeCompare(b);
+            });
+
             sections.forEach(section => {
+                const sectionData = dataToRender[section];
+                if (typeof sectionData !== 'object' || sectionData === null) return; // Skip non-object sections
+
                 const sectionDiv = document.createElement('div');
-                sectionDiv.style.gridColumn = '1 / -1';
-                sectionDiv.innerHTML = `<h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2">${section}</h3>`;
+                sectionDiv.style.gridColumn = '1 / -1'; // Make section title span all columns
+                sectionDiv.innerHTML = `<h3 class="text-lg font-semibold text-gray-700 mt-4 mb-2 capitalize">${section.replace(/_/g, ' ')}</h3>`;
                 statsContainer.appendChild(sectionDiv);
 
-                const sectionStats = instanceData[section];
-                const sortedKeys = Object.keys(sectionStats).sort();
+                const sortedKeys = Object.keys(sectionData).sort();
 
                 sortedKeys.forEach(key => {
-                    const value = sectionStats[key];
-                    const card = document.createElement('div');
-                    card.className = 'stat-card';
-                    card.innerHTML = `
-                        <div class="stat-key">${key}</div>
-                        <div class="stat-value">${formatValue(key, value)}</div>
-                    `;
-                    statsContainer.appendChild(card);
+                    const value = sectionData[key];
+                    // Only display stats with actual values (not null/undefined)
+                    if (value !== null && value !== undefined) {
+                        const card = document.createElement('div');
+                        card.className = 'stat-card';
+                        card.innerHTML = `
+                            <div class="stat-key">${key.replace(/_/g, ' ')}</div>
+                            <div class="stat-value">${formatValue(key, value)}</div>
+                        `;
+                        statsContainer.appendChild(card);
+                    }
                 });
             });
         }
 
-        // Function to update the dashboard with data from the selected instance
+        // Function to update the dashboard with data from the selected instance or 'All'
         function updateDashboard(allInstancesData) {
             // Hide loading/error, show dashboard content
             errorMessage.textContent = '';
             loadingState.style.display = 'none';
             errorState.style.display = 'none';
-            dashboardContent.style.display = 'block'; // Show the main content area
+            dashboardContent.style.display = 'block';
 
-            // Save all stats
-            allStats = allInstancesData;
-
-            // Get list of instances
+            allStats = allInstancesData; // Store the latest full data
             const instanceIds = Object.keys(allInstancesData);
 
-            // Update instance selector if needed
-            populateInstanceSelector(instanceIds);
+            // Update instance selector (only if instance list changed?) - safer to update always
+             populateInstanceSelector(instanceIds);
 
-            // Get data for the current instance
-            const instanceData = allInstancesData[currentInstanceId];
-            if (!instanceData) {
-                showError(`Instance "${currentInstanceId}" not found in stats data`);
-                return;
+            let dataToDisplay;
+            let titleSuffix = '';
+
+            if (currentInstanceId === 'All') {
+                dataToDisplay = aggregateStats(allInstancesData);
+                titleSuffix = ' (Aggregated)';
+            } else {
+                dataToDisplay = allInstancesData[currentInstanceId];
+                if (!dataToDisplay) {
+                     // This case should ideally be handled by populateInstanceSelector defaulting to 'All'
+                     console.warn(`Selected instance "${currentInstanceId}" not found in data, defaulting to aggregated view.`);
+                     currentInstanceId = 'All';
+                     instanceSelect.value = 'All';
+                     dataToDisplay = aggregateStats(allInstancesData);
+                     titleSuffix = ' (Aggregated - Fallback)';
+                } else {
+                    titleSuffix = ` (${currentInstanceId})`;
+                }
             }
 
-            // Render raw stats for this instance
-            renderRawStats(instanceData);
+             // Update the title for the raw stats section
+             statsTitle.textContent = `All Statistics${titleSuffix}`;
 
-            // --- Update Charts ---
-            const answerStats = instanceData.answer || {};
-            const requestStats = instanceData.request || {};
+
+            // Render raw stats
+            renderRawStats(dataToDisplay);
+
+            // --- Prepare Chart Data ---
+            const answerStats = dataToDisplay.answer || {};
+            const requestStats = dataToDisplay.request || {};
 
             const answerStatusData = [
                 answerStats.noerror || 0,
@@ -519,7 +609,7 @@ HTML_TEMPLATE = """
             const answerSourceData = [
                 answerStats.cached || 0,
                 answerStats.stale || 0,
-                (answerStats.total || 0) - (answerStats.cached || 0) - (answerStats.stale || 0)
+                Math.max(0, (answerStats.total || 0) - (answerStats.cached || 0) - (answerStats.stale || 0)) // Ensure non-negative
             ];
 
             const answerLatencyData = [
@@ -534,16 +624,27 @@ HTML_TEMPLATE = """
                 answerStats.slow || 0
             ];
 
+            // --- Initialize or Update Charts ---
             if (!answerStatusChart) { // Initialize charts on first successful fetch
-                answerStatusChart = initAnswerStatusChart(document.getElementById('answerStatusChart').getContext('2d'), instanceData);
-                requestTypeChart = initRequestTypeChart(document.getElementById('requestTypeChart').getContext('2d'), instanceData);
-                answerSourceChart = initAnswerSourceChart(document.getElementById('answerSourceChart').getContext('2d'), instanceData);
-                answerLatencyChart = initAnswerLatencyChart(document.getElementById('answerLatencyChart').getContext('2d'), instanceData);
+                try {
+                    answerStatusChart = initAnswerStatusChart(document.getElementById('answerStatusChart').getContext('2d'), dataToDisplay);
+                    requestTypeChart = initRequestTypeChart(document.getElementById('requestTypeChart').getContext('2d'), dataToDisplay);
+                    answerSourceChart = initAnswerSourceChart(document.getElementById('answerSourceChart').getContext('2d'), dataToDisplay);
+                    answerLatencyChart = initAnswerLatencyChart(document.getElementById('answerLatencyChart').getContext('2d'), dataToDisplay);
+                } catch (e) {
+                    console.error("Error initializing charts:", e);
+                    showError("Error initializing charts. Check console for details.");
+                }
             } else { // Update existing charts
-                updateChartData(answerStatusChart, answerStatusData);
-                updateChartData(requestTypeChart, requestTypeData);
-                updateChartData(answerSourceChart, answerSourceData);
-                updateChartData(answerLatencyChart, answerLatencyData);
+                 try {
+                    updateChartData(answerStatusChart, answerStatusData);
+                    updateChartData(requestTypeChart, requestTypeData);
+                    updateChartData(answerSourceChart, answerSourceData);
+                    updateChartData(answerLatencyChart, answerLatencyData);
+                } catch (e) {
+                    console.error("Error updating charts:", e);
+                    // Don't necessarily show a full error screen, but log it.
+                }
             }
         }
 
@@ -553,7 +654,7 @@ HTML_TEMPLATE = """
             dashboardContent.style.display = 'none'; // Hide dashboard on error
             errorState.style.display = 'block';
             errorMessage.textContent = `Details: ${error}`;
-            console.error("Error fetching stats:", error);
+            console.error("Error fetching/processing stats:", error);
         }
 
         // Function to fetch stats from the Flask backend
@@ -565,12 +666,16 @@ HTML_TEMPLATE = """
                     try {
                         const errorData = await response.json();
                         if (errorData && errorData.error) { errorDetails = errorData.error; }
-                    } catch (parseError) { /* Ignore */ }
+                    } catch (parseError) { /* Ignore if response is not JSON */ }
                     throw new Error(errorDetails);
                 }
                 const data = await response.json();
                 if (data.error) {
                     throw new Error(data.error);
+                }
+                 if (typeof data !== 'object' || data === null || Object.keys(data).length === 0) {
+                    // Handle case where backend returns valid JSON but it's empty or not an object
+                    throw new Error("Received empty or invalid data structure from backend.");
                 }
                 updateDashboard(data); // Call the main update function
             } catch (error) {
@@ -581,9 +686,12 @@ HTML_TEMPLATE = """
         // Handle instance selection change
         instanceSelect.addEventListener('change', function() {
             currentInstanceId = this.value;
-            if (allStats && allStats[currentInstanceId]) {
-                // Update dashboard with the selected instance data
+            // Re-render the dashboard immediately with the stored data for the new selection
+            if (allStats && Object.keys(allStats).length > 0) {
                 updateDashboard(allStats);
+            } else {
+                // If allStats is empty for some reason, trigger a fetch
+                fetchStats();
             }
         });
 
@@ -608,25 +716,40 @@ def index():
 def get_stats():
     """Fetches stats from Knot Resolver and returns as JSON."""
     try:
-        response = requests.get(KNOT_RESOLVER_STATS_URL, timeout=0.5)
-        response.raise_for_status()
+        response = requests.get(KNOT_RESOLVER_STATS_URL, timeout=0.5) # Short timeout for responsiveness
+        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
         stats_data = response.json()
+
+        # Basic validation: Check if it's a dictionary (expected format)
+        if not isinstance(stats_data, dict):
+             app.logger.warning(f"Received non-dictionary data from {KNOT_RESOLVER_STATS_URL}")
+             return jsonify({"error": "Received unexpected data format from Knot Resolver."}), 500
+
         return jsonify(stats_data)
+
     except requests.exceptions.ConnectionError:
-        return jsonify({"error": f"Connection refused. Is Knot Resolver running at {KNOT_RESOLVER_STATS_URL}?"}), 503
+        app.logger.error(f"Connection refused to {KNOT_RESOLVER_STATS_URL}")
+        return jsonify({"error": f"Connection refused. Is Knot Resolver webmgmt running at {KNOT_RESOLVER_STATS_URL}?"}), 503 # Service Unavailable
     except requests.exceptions.Timeout:
-        return jsonify({"error": "Request timed out."}), 504
+        app.logger.warning(f"Request timed out for {KNOT_RESOLVER_STATS_URL}")
+        return jsonify({"error": "Request timed out fetching stats from Knot Resolver."}), 504 # Gateway Timeout
+    except requests.exceptions.HTTPError as e:
+         app.logger.error(f"HTTP error fetching stats: {e}")
+         return jsonify({"error": f"HTTP error {e.response.status_code} from Knot Resolver: {e.response.reason}"}), e.response.status_code if e.response.status_code >= 500 else 500
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Failed to fetch stats: {str(e)}"}), 500
+        app.logger.error(f"General request error fetching stats: {e}")
+        return jsonify({"error": f"Failed to fetch stats: {str(e)}"}), 500 # Internal Server Error
     except json.JSONDecodeError:
-        return jsonify({"error": "Failed to decode JSON response from Knot Resolver."}), 500
+        app.logger.error(f"Failed to decode JSON from {KNOT_RESOLVER_STATS_URL}")
+        return jsonify({"error": "Failed to decode JSON response from Knot Resolver."}), 500 # Internal Server Error
     except Exception as e:
-        app.logger.error(f"Unexpected error fetching stats: {e}", exc_info=True)
-        return jsonify({"error": f"An unexpected server error occurred: {str(e)}"}), 500
+        app.logger.error(f"Unexpected error in /api/stats: {e}", exc_info=True) # Log traceback for unexpected errors
+        return jsonify({"error": f"An unexpected server error occurred."}), 500 # Internal Server Error
 
 # --- Main Execution ---
 if __name__ == '__main__':
     print("Starting Flask server for Knot Resolver Stats UI...")
     print(f"Fetching stats from: {KNOT_RESOLVER_STATS_URL}")
     print("Access the UI at: http://127.0.0.1:5001")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    # Use waitress or gunicorn for production instead of Flask's development server
+    app.run(host='0.0.0.0', port=5001, debug=False) # Turn off debug for production/general use
