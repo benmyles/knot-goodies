@@ -13,8 +13,8 @@
 -- }
 
 local M = {
-    served = 0,
-    skipped = 0,
+    -- served = 0,
+    -- skipped = 0,
 }
 
 local ffi = require('ffi')
@@ -28,10 +28,10 @@ M.callback = ffi.cast("kr_stale_cb",
         if ttl + 3600 * 24 * 3 > 0 then -- at most 3 days stale
             log_notice(ffi.C.LOG_GRP_SRVSTALE, '   => served stale data for ' .. n .. ' with TTL: ' .. tostring(ttl))
 
-            M.served = M.served + 1
-            if stats then
-                stats['astale.served'] = M.served
-            end
+            -- M.served = M.served + 1
+            -- if stats then
+            --     stats['astale.served'] = M.served
+            -- end
 
             resolve(n, qry.stype, qry.sclass, { 'NO_CACHE' }) -- fetch fresh data for future use
 
@@ -41,9 +41,9 @@ M.callback = ffi.cast("kr_stale_cb",
                 '   => skipped serving stale data for ' .. n .. ' with old TTL: ' .. tostring(ttl))
 
             M.skipped = M.skipped + 1
-            if stats then
-                stats['astale.skipped'] = M.skipped
-            end
+            -- if stats then
+            --     stats['astale.skipped'] = M.skipped
+            -- end
 
             return -1
         end
