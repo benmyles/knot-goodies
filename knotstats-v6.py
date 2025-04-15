@@ -201,7 +201,12 @@ HTML_TEMPLATE = """
                     <div class="chart-title">Request Type Distribution</div>
                     <canvas id="requestTypeChart"></canvas>
                 </div>
-                <div class="chart-card" style="grid-column: 1 / -1;"> <div class="chart-title">Answer Latency (ms)</div>
+                <div class="chart-card">
+                    <div class="chart-title">Answer Source</div>
+                    <canvas id="answerSourceChart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-title">Answer Latency (ms)</div>
                     <canvas id="answerLatencyChart"></canvas>
                 </div>
             </div>
@@ -232,6 +237,7 @@ HTML_TEMPLATE = """
         let answerStatusChart = null;
         let requestTypeChart = null;
         let answerLatencyChart = null;
+        let answerSourceChart = null;
 
         // Chart configuration helper
         const chartColors = {
@@ -245,6 +251,11 @@ HTML_TEMPLATE = """
             pink: 'rgb(236, 72, 153)',
             gray: 'rgb(107, 114, 128)',
             indigo: 'rgb(99, 102, 241)',
+            lime: 'rgb(132, 204, 22)',
+            amber: 'rgb(245, 158, 11)',
+            emerald: 'rgb(16, 185, 129)',
+            sky: 'rgb(14, 165, 233)',
+            fuchsia: 'rgb(217, 70, 239)',
         };
         const colorPalette = Object.values(chartColors);
 
@@ -304,6 +315,31 @@ HTML_TEMPLATE = """
             });
         }
 
+        function initAnswerSourceChart(ctx, data) {
+            const answerStats = data.answer || {};
+            const chartData = {
+                labels: ['Cached', 'Stale', 'Other'],
+                datasets: [{
+                    label: 'Answer Source',
+                    data: [
+                        answerStats.cached || 0,
+                        answerStats.stale || 0,
+                        (answerStats.total || 0) - (answerStats.cached || 0) - (answerStats.stale || 0)
+                    ],
+                    backgroundColor: [chartColors.emerald, chartColors.amber, chartColors.sky],
+                    hoverOffset: 4
+                }]
+            };
+            return new Chart(ctx, {
+                type: 'doughnut',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    plugins: { legend: { position: 'top' } }
+                }
+            });
+        }
+
         function initAnswerLatencyChart(ctx, data) {
             const answerStats = data.answer || {};
             const labels = ['<1ms', '<10ms', '<50ms', '<100ms', '<250ms', '<500ms', '<1s', '<1.5s', 'Slow'];
@@ -323,17 +359,15 @@ HTML_TEMPLATE = """
                         answerStats.slow || 0
                     ],
                     backgroundColor: colorPalette.slice(0, labels.length), // Use palette colors
-                    borderColor: colorPalette.map(c => c.replace(')', ', 0.8)').replace('rgb', 'rgba')), // Slightly darker border
-                    borderWidth: 1
+                    hoverOffset: 4
                 }]
             };
             return new Chart(ctx, {
-                type: 'bar',
+                type: 'doughnut',
                 data: chartData,
                 options: {
                     responsive: true,
-                    scales: { y: { beginAtZero: true, title: { display: true, text: 'Number of Queries' } } },
-                    plugins: { legend: { display: false } } // Hide legend for bar chart if desired
+                    plugins: { legend: { position: 'top' } }
                 }
             });
         }
@@ -475,6 +509,12 @@ HTML_TEMPLATE = """
                 requestStats.xdp || 0
             ];
 
+            const answerSourceData = [
+                answerStats.cached || 0,
+                answerStats.stale || 0,
+                (answerStats.total || 0) - (answerStats.cached || 0) - (answerStats.stale || 0)
+            ];
+
             const answerLatencyData = [
                 answerStats['1ms'] || 0,
                 answerStats['10ms'] || 0,
@@ -490,10 +530,12 @@ HTML_TEMPLATE = """
             if (!answerStatusChart) { // Initialize charts on first successful fetch
                 answerStatusChart = initAnswerStatusChart(document.getElementById('answerStatusChart').getContext('2d'), instanceData);
                 requestTypeChart = initRequestTypeChart(document.getElementById('requestTypeChart').getContext('2d'), instanceData);
+                answerSourceChart = initAnswerSourceChart(document.getElementById('answerSourceChart').getContext('2d'), instanceData);
                 answerLatencyChart = initAnswerLatencyChart(document.getElementById('answerLatencyChart').getContext('2d'), instanceData);
             } else { // Update existing charts
                 updateChartData(answerStatusChart, answerStatusData);
                 updateChartData(requestTypeChart, requestTypeData);
+                updateChartData(answerSourceChart, answerSourceData);
                 updateChartData(answerLatencyChart, answerLatencyData);
             }
         }
