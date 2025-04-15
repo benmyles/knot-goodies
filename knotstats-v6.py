@@ -404,18 +404,25 @@ HTML_TEMPLATE = """
         // Function to populate the instance selector dropdown
         function populateInstanceSelector(instances) {
             instanceSelect.innerHTML = '';
+
+            // Set current instance if not already set or if not in the list
+            if (!currentInstanceId || !instances.includes(currentInstanceId)) {
+                currentInstanceId = instances[0];
+            }
+
             instances.forEach(instance => {
                 const option = document.createElement('option');
                 option.value = instance;
                 option.textContent = instance;
+                // Set selected attribute based on currentInstanceId
+                if (instance === currentInstanceId) {
+                    option.selected = true;
+                }
                 instanceSelect.appendChild(option);
             });
 
-            // Set current instance if not already set
-            if (!currentInstanceId || !instances.includes(currentInstanceId)) {
-                currentInstanceId = instances[0];
-                instanceSelect.value = currentInstanceId;
-            }
+            // Make sure the dropdown value matches currentInstanceId
+            instanceSelect.value = currentInstanceId;
         }
 
         // Function to flatten nested stats with dot notation
