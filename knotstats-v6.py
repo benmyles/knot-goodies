@@ -32,10 +32,13 @@
 
 import requests
 import json
+import os
+import subprocess
 from flask import Flask, render_template_string, jsonify
 
 # --- Configuration ---
 KNOT_RESOLVER_STATS_URL = "http://192.168.1.22:8888/metrics/json"
+HOSTS_FILE_PATH = "/etc/knot-resolver/hosts.local"
 # --- Flask App ---
 app = Flask(__name__)
 
@@ -169,12 +172,89 @@ HTML_TEMPLATE = """
             width: 100%;
             max-width: 400px;
         }
+
+        /* Hosts Editor styles */
+        .hosts-editor-container {
+            margin-bottom: 2rem;
+        }
+        .hosts-table-row {
+            transition: background-color 0.2s;
+        }
+        .hosts-table-row:hover {
+            background-color: #f7fafc;
+        }
+        .host-action-btn {
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
+            margin: 0 0.25rem;
+            cursor: pointer;
+        }
+        .host-edit-btn {
+            color: white;
+            background-color: #3b82f6;
+        }
+        .host-edit-btn:hover {
+            background-color: #2563eb;
+        }
+        .host-delete-btn {
+            color: white;
+            background-color: #ef4444;
+        }
+        .host-delete-btn:hover {
+            background-color: #dc2626;
+        }
+        .host-input {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.25rem;
+        }
+        .hosts-status-success {
+            background-color: #dcfce7;
+            color: #166534;
+            border-radius: 0.375rem;
+        }
+        .hosts-status-error {
+            background-color: #fee2e2;
+            color: #b91c1c;
+            border-radius: 0.375rem;
+        }
+
+        /* Navigation tabs */
+        .navigation-tabs {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .nav-tab {
+            padding: 0.5rem 1.5rem;
+            background-color: rgba(255, 255, 255, 0.2);
+            color: white;
+            border-radius: 0.5rem;
+            transition: background-color 0.2s;
+            cursor: pointer;
+            border: none;
+            font-weight: 500;
+        }
+        .nav-tab:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        .nav-tab.active {
+            background-color: rgba(255, 255, 255, 0.4);
+            font-weight: 600;
+        }
     </style>
 </head>
 <body class="p-4 md:p-8">
 
     <header>
         <h1>Knot Resolver Stats Dashboard</h1>
+        <div class="navigation-tabs mt-4">
+            <button id="dashboard-tab" class="nav-tab active">Dashboard</button>
+            <button id="hosts-tab" class="nav-tab">Hosts Editor</button>
+        </div>
     </header>
 
     <main>
@@ -214,6 +294,39 @@ HTML_TEMPLATE = """
             <h2 class="section-title" id="stats-title">All Statistics</h2>
             <div id="stats-container" class="stats-grid">
                 </div>
+        </div>
+
+        <div id="hosts-editor-section" style="display: none;">
+            <h2 class="section-title">Hosts Editor</h2>
+            <div class="hosts-editor-container">
+                <div class="p-4 mb-4 bg-white rounded-xl shadow-md">
+                    <div class="flex justify-between mb-4">
+                        <button id="add-host-btn" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition">
+                            Add Host
+                        </button>
+                        <button id="save-hosts-btn" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition">
+                            Save Changes
+                        </button>
+                    </div>
+                    <div id="hosts-table-container" class="overflow-x-auto">
+                        <table class="min-w-full bg-white">
+                            <thead>
+                                <tr class="bg-gray-100 text-gray-700">
+                                    <th class="py-2 px-4 border-b text-left">IP Address</th>
+                                    <th class="py-2 px-4 border-b text-left">Hostname</th>
+                                    <th class="py-2 px-4 border-b text-center">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="hosts-table-body">
+                                <tr id="hosts-loading-row">
+                                    <td colspan="3" class="py-4 text-center text-gray-500">Loading hosts...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div id="hosts-status" class="mt-4 p-3 hidden"></div>
+                </div>
+            </div>
         </div>
     </main>
 
@@ -547,11 +660,19 @@ HTML_TEMPLATE = """
 
         // Function to update the dashboard with data from the selected instance or 'All'
         function updateDashboard(allInstancesData) {
-            // Hide loading/error, show dashboard content
+            // Hide loading/error
             errorMessage.textContent = '';
             loadingState.style.display = 'none';
             errorState.style.display = 'none';
-            dashboardContent.style.display = 'block';
+
+            // Only show dashboard content if we're on the dashboard tab
+            if (activeTab === 'dashboard') {
+                dashboardContent.style.display = 'block';
+                hostsEditorSection.style.display = 'none';
+            } else {
+                dashboardContent.style.display = 'none';
+                // Don't change hostsEditorSection visibility - let the tab handler manage it
+            }
 
             allStats = allInstancesData; // Store the latest full data
             const instanceIds = Object.keys(allInstancesData);
@@ -695,11 +816,245 @@ HTML_TEMPLATE = """
             }
         });
 
+        // Track which tab is active
+        let activeTab = 'dashboard';
+
+        // Modified fetchStats function that only updates UI when dashboard tab is active
+        function fetchStatsIfActive() {
+            if (activeTab === 'dashboard') {
+                fetchStats();
+            }
+        }
+
         // Fetch stats immediately on load
         fetchStats();
 
         // Set interval to fetch stats every 1000ms (1 second)
-        setInterval(fetchStats, 1000);
+        setInterval(fetchStatsIfActive, 1000);
+
+        // --- Hosts Editor Functionality ---
+        const hostsEditorSection = document.getElementById('hosts-editor-section');
+        const dashboardTab = document.getElementById('dashboard-tab');
+        const hostsTab = document.getElementById('hosts-tab');
+        const hostsTableBody = document.getElementById('hosts-table-body');
+        const addHostBtn = document.getElementById('add-host-btn');
+        const saveHostsBtn = document.getElementById('save-hosts-btn');
+        const hostsStatus = document.getElementById('hosts-status');
+
+        let currentHosts = [];
+        let hostsChanged = false;
+
+        // Tab navigation
+        dashboardTab.addEventListener('click', function() {
+            activeTab = 'dashboard';
+            dashboardContent.style.display = 'block';
+            hostsEditorSection.style.display = 'none';
+            dashboardTab.classList.add('active');
+            hostsTab.classList.remove('active');
+
+            // Fetch fresh stats when switching back to dashboard
+            fetchStats();
+        });
+
+        hostsTab.addEventListener('click', function() {
+            activeTab = 'hosts';
+            dashboardContent.style.display = 'none';
+            hostsEditorSection.style.display = 'block';
+            dashboardTab.classList.remove('active');
+            hostsTab.classList.add('active');
+
+            // Load hosts data when switching to this tab
+            fetchHosts();
+        });
+
+        // Fetch hosts from the API
+        async function fetchHosts() {
+            try {
+                hostsTableBody.innerHTML = '<tr><td colspan="3" class="py-4 text-center text-gray-500">Loading hosts...</td></tr>';
+
+                const response = await fetch('/api/hosts');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                currentHosts = data.hosts || [];
+                renderHostsTable();
+
+                if (data.message) {
+                    showHostsStatus(data.message, 'info');
+                }
+            } catch (error) {
+                console.error('Error fetching hosts:', error);
+                showHostsStatus(`Failed to load hosts: ${error.message}`, 'error');
+                hostsTableBody.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-red-500">
+                    Error loading hosts. Please try again.</td></tr>`;
+            }
+        }
+
+        // Render the hosts table
+        function renderHostsTable() {
+            hostsTableBody.innerHTML = '';
+
+            if (currentHosts.length === 0) {
+                hostsTableBody.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-gray-500">
+                    No hosts entries found. Click "Add Host" to create one.</td></tr>`;
+                return;
+            }
+
+            currentHosts.forEach((host, index) => {
+                const row = document.createElement('tr');
+                row.className = 'hosts-table-row';
+                row.innerHTML = `
+                    <td class="py-2 px-4 border-b">${host.ip}</td>
+                    <td class="py-2 px-4 border-b">${host.hostname}</td>
+                    <td class="py-2 px-4 border-b text-center">
+                        <button class="host-action-btn host-edit-btn" data-index="${index}">Edit</button>
+                        <button class="host-action-btn host-delete-btn" data-index="${index}">Delete</button>
+                    </td>
+                `;
+                hostsTableBody.appendChild(row);
+            });
+
+            // Add event listeners to the new buttons
+            document.querySelectorAll('.host-edit-btn').forEach(btn => {
+                btn.addEventListener('click', () => editHost(parseInt(btn.dataset.index)));
+            });
+
+            document.querySelectorAll('.host-delete-btn').forEach(btn => {
+                btn.addEventListener('click', () => deleteHost(parseInt(btn.dataset.index)));
+            });
+        }
+
+        // Add a new host
+        function addHost() {
+            const newHost = { ip: '', hostname: '' };
+            currentHosts.push(newHost);
+            renderHostsTable();
+
+            // Switch to edit mode for the new host
+            editHost(currentHosts.length - 1);
+            hostsChanged = true;
+        }
+
+        // Edit an existing host
+        function editHost(index) {
+            const host = currentHosts[index];
+            const rows = hostsTableBody.querySelectorAll('tr');
+            const row = rows[index];
+
+            row.innerHTML = `
+                <td class="py-2 px-4 border-b">
+                    <input type="text" class="host-input ip-input" value="${host.ip}" placeholder="IP Address">
+                </td>
+                <td class="py-2 px-4 border-b">
+                    <input type="text" class="host-input hostname-input" value="${host.hostname}" placeholder="Hostname">
+                </td>
+                <td class="py-2 px-4 border-b text-center">
+                    <button class="host-action-btn host-save-btn bg-green-600 text-white hover:bg-green-700">Save</button>
+                    <button class="host-action-btn host-cancel-btn bg-gray-500 text-white hover:bg-gray-600">Cancel</button>
+                </td>
+            `;
+
+            const saveBtn = row.querySelector('.host-save-btn');
+            const cancelBtn = row.querySelector('.host-cancel-btn');
+
+            saveBtn.addEventListener('click', () => saveHostEdit(index, row));
+            cancelBtn.addEventListener('click', () => cancelHostEdit());
+        }
+
+        // Save host edit
+        function saveHostEdit(index, row) {
+            const ipInput = row.querySelector('.ip-input');
+            const hostnameInput = row.querySelector('.hostname-input');
+
+            const ip = ipInput.value.trim();
+            const hostname = hostnameInput.value.trim();
+
+            // Basic validation
+            if (!ip || !hostname) {
+                alert('Both IP address and hostname are required.');
+                return;
+            }
+
+            // Save changes
+            currentHosts[index] = { ip, hostname };
+            hostsChanged = true;
+            renderHostsTable();
+        }
+
+        // Cancel host edit
+        function cancelHostEdit() {
+            renderHostsTable();
+        }
+
+        // Delete a host
+        function deleteHost(index) {
+            if (confirm('Are you sure you want to delete this host entry?')) {
+                currentHosts.splice(index, 1);
+                hostsChanged = true;
+                renderHostsTable();
+            }
+        }
+
+        // Save all hosts changes
+        async function saveAllHosts() {
+            try {
+                const response = await fetch('/api/hosts', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ hosts: currentHosts })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showHostsStatus(data.message || 'Hosts file updated successfully', 'success');
+                    hostsChanged = false;
+                } else {
+                    throw new Error(data.error || 'Failed to update hosts file');
+                }
+            } catch (error) {
+                console.error('Error saving hosts:', error);
+                showHostsStatus(`Failed to save hosts: ${error.message}`, 'error');
+            }
+        }
+
+        // Show status message
+        function showHostsStatus(message, type) {
+            hostsStatus.textContent = message;
+            hostsStatus.className = 'mt-4 p-3';
+
+            if (type === 'success') {
+                hostsStatus.classList.add('hosts-status-success');
+            } else if (type === 'error') {
+                hostsStatus.classList.add('hosts-status-error');
+            } else {
+                hostsStatus.classList.add('bg-blue-100', 'text-blue-800');
+            }
+
+            hostsStatus.classList.remove('hidden');
+
+            // Hide the message after 5 seconds
+            setTimeout(() => {
+                hostsStatus.classList.add('hidden');
+            }, 5000);
+        }
+
+        // Add event listeners
+        addHostBtn.addEventListener('click', addHost);
+        saveHostsBtn.addEventListener('click', saveAllHosts);
+
+        // Check for unsaved changes when leaving the page
+        window.addEventListener('beforeunload', (event) => {
+            if (hostsChanged) {
+                const message = 'You have unsaved changes. Are you sure you want to leave?';
+                event.returnValue = message;
+                return message;
+            }
+        });
     </script>
 </body>
 </html>
@@ -745,6 +1100,76 @@ def get_stats():
     except Exception as e:
         app.logger.error(f"Unexpected error in /api/stats: {e}", exc_info=True) # Log traceback for unexpected errors
         return jsonify({"error": f"An unexpected server error occurred."}), 500 # Internal Server Error
+
+@app.route('/api/hosts', methods=['GET'])
+def get_hosts():
+    """Fetch contents of the hosts file."""
+    try:
+        if not os.path.exists(HOSTS_FILE_PATH):
+            return jsonify({"hosts": [], "message": "Hosts file does not exist yet. It will be created when you add entries."}), 200
+
+        with open(HOSTS_FILE_PATH, 'r') as file:
+            content = file.read()
+
+        # Parse hosts file into structured data
+        hosts = []
+        for line in content.splitlines():
+            line = line.strip()
+            if line and not line.startswith('#'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    hosts.append({
+                        "ip": parts[0],
+                        "hostname": parts[1]
+                    })
+
+        return jsonify({"hosts": hosts}), 200
+    except Exception as e:
+        app.logger.error(f"Error reading hosts file: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to read hosts file: {str(e)}"}), 500
+
+@app.route('/api/hosts', methods=['POST'])
+def update_hosts():
+    """Update the hosts file with new content."""
+    try:
+        from flask import request
+
+        hosts_data = request.json.get('hosts', [])
+
+        # Validate the data
+        for host in hosts_data:
+            if 'ip' not in host or 'hostname' not in host:
+                return jsonify({"error": "Each host must have both IP and hostname"}), 400
+
+        # Format hosts data into file content
+        content = ""
+        for host in hosts_data:
+            content += f"{host['ip']} {host['hostname']}\n"
+
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(HOSTS_FILE_PATH), exist_ok=True)
+
+        # Write the content to the file
+        with open(HOSTS_FILE_PATH, 'w') as file:
+            file.write(content)
+
+        # Reload Knot Resolver to apply changes
+        try:
+            subprocess.run(['/usr/bin/sudo', '/usr/bin/systemctl', 'reload', 'knot-resolver'], check=True)
+            reload_success = True
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            app.logger.warning(f"Failed to reload Knot Resolver: {e}")
+            reload_success = False
+
+        return jsonify({
+            "success": True,
+            "message": "Hosts file updated successfully" +
+                       ("" if reload_success else " but failed to reload Knot Resolver")
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error updating hosts file: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to update hosts file: {str(e)}"}), 500
 
 # --- Main Execution ---
 if __name__ == '__main__':
