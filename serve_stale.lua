@@ -29,7 +29,7 @@ M.callback = ffi.cast("kr_stale_cb",
 
             resolve(n, qry.stype, qry.sclass, { 'NO_CACHE' }) -- fetch fresh data for future use
 
-            return 10                                         -- short ttl for stale data
+            return 1
         else
             log_debug(ffi.C.LOG_GRP_SRVSTALE,
                 '   => skipped serving stale data for ' .. n .. ' with old TTL: ' .. tostring(ttl))
